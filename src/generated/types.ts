@@ -134,6 +134,8 @@ export interface GqlEscrowFilter {
 
 export interface GqlProtocolStats {
   id: string;
+  /** Chain ID (1 for mainnet, 11155111 for sepolia) */
+  chainId: number;
   totalEscrowsCreated: number;
   totalVolumeEscrowed: BigIntScalar;
   totalFeesCollected: BigIntScalar;

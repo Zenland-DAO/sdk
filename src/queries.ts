@@ -150,9 +150,10 @@ query escrows(
 `;
 
 export const PROTOCOL_STATS_QUERY = `
-query protocolStats($id: String! = "global") {
+query protocolStats($id: String! = "mainnet") {
   protocolStats(id: $id) {
     id
+    chainId
     totalEscrowsCreated
     totalVolumeEscrowed
     totalFeesCollected
