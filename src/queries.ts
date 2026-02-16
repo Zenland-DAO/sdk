@@ -77,6 +77,7 @@ export const ESCROW_QUERY = `
 query escrow($id: String!) {
   escrow(id: $id) {
     id
+    chainId
     buyer
     seller
     agent
@@ -122,6 +123,7 @@ query escrows(
   ) {
     items {
       id
+      chainId
       buyer
       seller
       agent

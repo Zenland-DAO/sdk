@@ -80,6 +80,8 @@ export interface GqlAgentFilter {
 
 export interface GqlEscrow {
   id: string;
+  /** Chain ID where this escrow is deployed (1 for mainnet, 11155111 for sepolia) */
+  chainId: number;
   buyer: string;
   seller: string;
   agent?: Maybe<string>;
