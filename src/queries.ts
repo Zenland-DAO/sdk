@@ -19,6 +19,7 @@ query Agent($id: String!) {
     contact
     totalResolved
     activeCases
+    totalEscrowsAssigned
     registrationTime
     lastEngagementTimestamp
     totalEarnings
@@ -60,6 +61,7 @@ query Agents($where: agentFilter, $orderBy: String, $orderDirection: String, $li
       contact
       totalResolved
       activeCases
+      totalEscrowsAssigned
       registrationTime
       lastEngagementTimestamp
       totalEarnings

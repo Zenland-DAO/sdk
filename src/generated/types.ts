@@ -35,6 +35,7 @@ export interface GqlAgent {
   contact: string;
   totalResolved: number;
   activeCases: number;
+  totalEscrowsAssigned: number;
   registrationTime: BigIntScalar;
   lastEngagementTimestamp: BigIntScalar;
   totalEarnings: BigIntScalar;
