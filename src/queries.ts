@@ -166,6 +166,11 @@ query protocolStats($id: String! = "mainnet") {
     totalAgentsRegistered
     activeAgentsCount
   }
+  agents(where: { isActive: true }, limit: 1000) {
+    items {
+      stablecoinStake
+    }
+  }
 }
 `;
 

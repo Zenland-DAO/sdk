@@ -221,6 +221,7 @@ export interface EscrowsQueryResponse {
 
 export interface ProtocolStatsQueryResponse {
   protocolStats: Maybe<GqlProtocolStats>;
+  agents: { items: Array<{ stablecoinStake: BigIntScalar }> };
 }
 
 export interface TransactionLogsQueryResponse {

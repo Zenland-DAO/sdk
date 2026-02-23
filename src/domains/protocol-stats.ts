@@ -19,7 +19,12 @@ export interface ProtocolStats {
   totalEscrowsCreated: number;
   totalVolumeEscrowed: bigint;
   totalFeesCollected: bigint;
+  /** True TVL = escrowTVL + agentStakingTVL */
   currentTVL: bigint;
+  /** TVL held in active escrow contracts only */
+  escrowTVL: bigint;
+  /** TVL held as agent stablecoin collateral in the registry */
+  agentStakingTVL: bigint;
   activeEscrowCount: number;
   totalAgentsRegistered: number;
   activeAgentsCount: number;
@@ -28,14 +33,24 @@ export interface ProtocolStats {
 /**
  * Convert raw GraphQL response to normalized ProtocolStats
  */
-function normalizeProtocolStats(raw: GqlProtocolStats): ProtocolStats {
+function normalizeProtocolStats(
+  raw: GqlProtocolStats,
+  activeAgents: Array<{ stablecoinStake: string | number | bigint }>,
+): ProtocolStats {
+  const escrowTVL = BigInt(raw.currentTVL);
+  const agentStakingTVL = activeAgents.reduce(
+    (sum, a) => sum + BigInt(a.stablecoinStake),
+    0n,
+  );
   return {
     id: raw.id,
     chainId: (raw as any).chainId,
     totalEscrowsCreated: raw.totalEscrowsCreated,
     totalVolumeEscrowed: BigInt(raw.totalVolumeEscrowed),
     totalFeesCollected: BigInt(raw.totalFeesCollected),
-    currentTVL: BigInt(raw.currentTVL),
+    currentTVL: escrowTVL + agentStakingTVL,
+    escrowTVL,
+    agentStakingTVL,
     activeEscrowCount: raw.activeEscrowCount,
     totalAgentsRegistered: raw.totalAgentsRegistered,
     activeAgentsCount: raw.activeAgentsCount,
@@ -74,7 +89,7 @@ export function createProtocolStatsDomain(baseUrl: string) {
       return null;
     }
 
-    return normalizeProtocolStats(response.protocolStats);
+    return normalizeProtocolStats(response.protocolStats, response.agents?.items ?? []);
   }
 
   /**
