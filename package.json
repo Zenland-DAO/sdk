@@ -1,6 +1,6 @@
 {
   "name": "@zenland/sdk",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Official SDK for interacting with the Zenland escrow protocol indexer",
   "license": "MIT",
   "author": "Zenland",

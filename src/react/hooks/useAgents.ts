@@ -13,6 +13,10 @@ export interface UseAgentsArgs {
   limit?: number;
   /** Pagination offset */
   offset?: number;
+  /** Field to order by (e.g. "stablecoinStake", "totalResolved", "disputeFeeBps", "totalEscrowsAssigned") */
+  orderBy?: string;
+  /** Order direction */
+  orderDirection?: "asc" | "desc";
   /** Whether to enable the query */
   enabled?: boolean;
 }
@@ -44,7 +48,7 @@ export function useAgents(args?: UseAgentsArgs) {
   const { enabled = true, ...filterArgs } = args ?? {};
 
   return useQuery<GqlAgentPage>({
-    queryKey: ["zenland", "agents", filterArgs.onlyActive, filterArgs.onlyAvailable, filterArgs.limit, filterArgs.offset],
+    queryKey: ["zenland", "agents", filterArgs.onlyActive, filterArgs.onlyAvailable, filterArgs.limit, filterArgs.offset, filterArgs.orderBy, filterArgs.orderDirection],
     queryFn: () => client.agents.list(filterArgs),
     enabled,
   });

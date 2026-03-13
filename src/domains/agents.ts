@@ -37,7 +37,7 @@ export function createAgentsDomain(baseUrl: string) {
     const variables = {
       limit: args?.limit ?? 30,
       offset: args?.offset ?? 0,
-      orderBy: args?.orderBy ?? "totalResolved",
+      orderBy: args?.orderBy ?? "stablecoinStake",
       orderDirection: args?.orderDirection ?? "desc",
       where: Object.keys(where).length > 0 ? where : undefined,
     };
