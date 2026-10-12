@@ -67,4 +67,4 @@ export type {
 
 // Re-export client for advanced usage
 export { createZenlandClient } from "./client";
-export type { ZenlandClient, ZenlandClientConfig } from "./client";
+export type { ZenlandClient, ZenlandClientConfig, ZenlandRpcConfig, ZenlandRpcChainConfig } from "./client";
