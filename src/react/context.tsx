@@ -1,6 +1,7 @@
 "use client";
 
-import { createContext, useContext, useMemo, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
+import { QueryClientContext } from "@tanstack/react-query";
 import { createZenlandClient, type ZenlandClient, type ZenlandClientConfig } from "../client";
 
 const ZenlandContext = createContext<ZenlandClient | null>(null);
@@ -14,7 +15,9 @@ export interface ZenlandProviderProps {
 /**
  * Provider component for the Zenland SDK.
  *
- * Wrap your app with this provider to use the React hooks.
+ * Wrap your app with this provider to use the React hooks. Inside a
+ * `QueryClientProvider`, Zenland queries are refetched whenever the client
+ * reports new data (RPC mode background syncs).
  *
  * @example
  * ```tsx
@@ -36,6 +39,14 @@ export interface ZenlandProviderProps {
  */
 export function ZenlandProvider({ children, config }: ZenlandProviderProps) {
   const client = useMemo(() => createZenlandClient(config), [config]);
+  const queryClient = useContext(QueryClientContext);
+
+  useEffect(() => {
+    if (!queryClient) return;
+    return client.subscribe(() => {
+      void queryClient.invalidateQueries({ queryKey: ["zenland"] });
+    });
+  }, [client, queryClient]);
 
   return <ZenlandContext.Provider value={client}>{children}</ZenlandContext.Provider>;
 }

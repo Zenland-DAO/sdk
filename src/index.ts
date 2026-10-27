@@ -18,7 +18,14 @@
 
 // Main client
 export { createZenlandClient, zenland } from "./client";
-export type { ZenlandClient, ZenlandClientConfig, ZenlandRpcConfig, ZenlandRpcChainConfig } from "./client";
+export type {
+  ZenlandClient,
+  ZenlandClientConfig,
+  ZenlandRpcConfig,
+  ZenlandRpcChainConfig,
+  ZenlandRpcControls,
+} from "./client";
+export type { ZenlandRpcStorage } from "./rpc/snapshot";
 export { ZENLAND_DEPLOYMENTS } from "./rpc/deployments";
 export type { ZenlandDeployment } from "./rpc/deployments";
 

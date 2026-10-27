@@ -9,6 +9,7 @@ import { createAgentsDomain, type AgentsDomain } from "./domains/agents";
 import { createProtocolStatsDomain, type ProtocolStatsDomain } from "./domains/protocol-stats";
 import { createTransactionLogsDomain, type TransactionLogsDomain } from "./domains/transaction-logs";
 import { ZENLAND_DEPLOYMENTS, type ZenlandDeployment } from "./rpc/deployments";
+import type { ZenlandRpcStorage } from "./rpc/snapshot";
 import { getChainSync } from "./rpc/sync";
 import {
   createRpcAgentsDomain,
@@ -35,6 +36,30 @@ export interface ZenlandRpcConfig {
   minSyncIntervalMs?: number;
   /** Blocks to stay behind the chain head (default 1) */
   blockLag?: number;
+  /** Blocks after which events are final and get cached (default 64) */
+  confirmations?: number;
+  /**
+   * Persist synced data so later sessions only fetch new blocks, e.g.
+   * `window.localStorage`. Only confirmed blocks are stored.
+   */
+  storage?: ZenlandRpcStorage;
+  /**
+   * Endpoint serving snapshots from `client.rpc.snapshot()`, fetched with
+   * `?chainId=` when `storage` is empty. Saves first-time visitors the full
+   * history scan.
+   */
+  snapshotUrl?: string;
+  /**
+   * Answer the first reads with data restored from `storage` / `snapshotUrl`
+   * immediately and sync in the background (default false). `subscribe`
+   * fires when the background sync brings changes.
+   */
+  staleWhileRevalidate?: boolean;
+}
+
+export interface ZenlandRpcControls {
+  /** Sync a chain, then return its confirmed state as an encoded snapshot (null if unknown) */
+  snapshot(chainId: number): Promise<string | null>;
 }
 
 export interface ZenlandClientConfig {
@@ -62,6 +87,15 @@ export interface ZenlandClient {
 
   /** Transaction logs */
   readonly transactionLogs: TransactionLogsDomain;
+
+  /**
+   * Listen for data changes (RPC mode: a sync found new events). The
+   * GraphQL client never calls the listener. Returns an unsubscribe function.
+   */
+  subscribe(listener: () => void): () => void;
+
+  /** RPC mode only: snapshot export for serving `snapshotUrl` */
+  readonly rpc?: ZenlandRpcControls;
 }
 
 /**
@@ -106,6 +140,7 @@ export function createZenlandClient(config?: ZenlandClientConfig): ZenlandClient
     agents: createAgentsDomain(baseUrl),
     protocolStats: createProtocolStatsDomain(baseUrl),
     transactionLogs: createTransactionLogsDomain(baseUrl),
+    subscribe: () => () => {},
   };
 }
 
@@ -124,6 +159,10 @@ function createRpcClient(rpc: ZenlandRpcConfig): ZenlandClient {
       deployment: deployment as ZenlandDeployment,
       minSyncIntervalMs: rpc.minSyncIntervalMs,
       blockLag: rpc.blockLag,
+      confirmations: rpc.confirmations,
+      storage: rpc.storage,
+      snapshotUrl: rpc.snapshotUrl,
+      staleWhileRevalidate: rpc.staleWhileRevalidate,
     });
   });
 
@@ -133,6 +172,16 @@ function createRpcClient(rpc: ZenlandRpcConfig): ZenlandClient {
     agents: createRpcAgentsDomain(syncers),
     protocolStats: createRpcProtocolStatsDomain(syncers),
     transactionLogs: createRpcTransactionLogsDomain(syncers),
+    subscribe(listener) {
+      const unsubscribes = syncers.map((s) => s.subscribe(listener));
+      return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
+    },
+    rpc: {
+      async snapshot(chainId) {
+        const syncer = syncers.find((s) => s.chainId === chainId);
+        return syncer ? syncer.snapshot() : null;
+      },
+    },
   };
 }
 

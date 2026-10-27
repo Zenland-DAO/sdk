@@ -122,8 +122,36 @@ Creates a new Zenland SDK client.
 ```typescript
 interface ZenlandClientConfig {
   baseUrl?: string; // Default: 'https://api.zen.land'
+  rpc?: ZenlandRpcConfig; // Read from chain via RPC instead of the indexer
 }
 ```
+
+#### RPC mode
+
+With `rpc`, the client reads protocol events with `eth_getLogs` and builds the
+same rows as the indexer in memory. The first sync scans the full history,
+which is slow, so it can be cached:
+
+```typescript
+const client = createZenlandClient({
+  rpc: {
+    chains: [{ chainId: 1, rpcUrl: 'https://...' }],
+    // Persist confirmed blocks; later sessions only fetch new blocks
+    storage: window.localStorage,
+    // Seed first visits from a server running `client.rpc.snapshot(chainId)`
+    snapshotUrl: '/api/zenland/snapshot',
+    // Answer with cached data at once, sync in the background
+    staleWhileRevalidate: true,
+  },
+});
+
+// Server route serving `snapshotUrl` (`?chainId=` is appended)
+const snapshot = await serverClient.rpc?.snapshot(chainId); // JSON string
+```
+
+Only blocks older than `confirmations` (default 64) are cached, so reorgs never
+end up in a snapshot. `client.subscribe(listener)` fires when a sync finds new
+events; `ZenlandProvider` uses it to refetch Zenland queries.
 
 #### `zenland`
 

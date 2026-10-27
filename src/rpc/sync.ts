@@ -5,6 +5,13 @@
  * in-memory `ChainState`. The first sync scans from the deployment block;
  * later syncs only fetch new blocks. Syncs are de-duplicated and throttled so
  * many hooks rendering at once trigger a single round of RPC calls.
+ *
+ * Events are split at `head - confirmations`: older events go into the
+ * confirmed state, which is final and can be persisted or shared as a
+ * snapshot; the unconfirmed tail is re-fetched every sync and applied to a
+ * copy, so a reorg never sticks in the confirmed state. The initial full scan
+ * is slow (one eth_getLogs over the whole history), so the confirmed state can
+ * be restored from `storage` or seeded from `snapshotUrl` instead.
  */
 
 import {
@@ -19,6 +26,7 @@ import {
 } from "viem";
 import { agentRegistryEventsAbi, escrowFactoryEventsAbi, escrowInstanceAbi } from "./abis";
 import type { ZenlandDeployment } from "./deployments";
+import { decodeSnapshot, encodeSnapshot, type ChainSnapshot, type ZenlandRpcStorage } from "./snapshot";
 import {
   applyEvent,
   createChainState,
@@ -26,6 +34,7 @@ import {
   type ChainState,
   type ContractType,
   type EscrowImmutables,
+  STATE_VERSION,
 } from "./store";
 
 /** Multicall3 is deployed at the same address on all supported chains */
@@ -64,6 +73,21 @@ export interface ChainSyncConfig {
    * a head block that the node serving eth_getLogs has not seen yet.
    */
   blockLag?: number;
+  /** Blocks after which events are treated as final (default 64, ~2 epochs) */
+  confirmations?: number;
+  /** Persists the confirmed state between sessions */
+  storage?: ZenlandRpcStorage;
+  /**
+   * URL serving an encoded snapshot (`?chainId=` is appended), used when
+   * `storage` has none. See `ZenlandClient.rpc.snapshot`.
+   */
+  snapshotUrl?: string;
+  /**
+   * When the state was restored from storage / a snapshot, answer the first
+   * reads with it right away and sync in the background (default false).
+   * Use `subscribe` to learn when fresh data arrives.
+   */
+  staleWhileRevalidate?: boolean;
 }
 
 export interface ChainSync {
@@ -72,8 +96,12 @@ export interface ChainSync {
   sync(): Promise<ChainState>;
   /** Current state (may be stale or empty if never synced) */
   readonly state: ChainState;
-  /** Whether at least one sync has completed */
+  /** Whether a state is available (synced, or restored from a snapshot) */
   readonly isSynced: boolean;
+  /** Sync, then return the confirmed state as an encoded snapshot */
+  snapshot(): Promise<string | null>;
+  /** Called whenever a sync changes the state */
+  subscribe(listener: () => void): () => void;
 }
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -86,16 +114,31 @@ export function createChainSync(config: ChainSyncConfig): ChainSync {
   const { chainId, deployment } = config;
   const minSyncIntervalMs = config.minSyncIntervalMs ?? 2_000;
   const blockLag = BigInt(config.blockLag ?? 1);
+  const confirmations = BigInt(config.confirmations ?? 64);
   const factoryAddress = deployment.escrowFactory.toLowerCase();
   const registryAddress = deployment.agentRegistry.toLowerCase();
+  const storageKey = `zenland:rpc:${chainId}:${factoryAddress}`;
 
   const client: PublicClient = createPublicClient({ transport: http(config.rpcUrl) });
 
-  const state = createChainState(chainId);
-  const knownEscrows: string[] = [];
+  /** Final state up to `confirmedBlock`; only ever moves forward */
+  let confirmed = createChainState(chainId);
+  let confirmedBlock: bigint | null = null;
+  /** Escrows created at or before `confirmedBlock` */
+  let knownEscrows: string[] = [];
+  /** `confirmed` plus the unconfirmed tail, up to `lastBlock` */
+  let tip = confirmed;
   let lastBlock: bigint | null = null;
+  /** Whether a sync against the RPC completed in this session */
+  let live = false;
   let lastSyncAt = 0;
   let inflight: Promise<ChainState> | null = null;
+  let restoring: Promise<void> | null = null;
+  /** Event ids applied on top of `confirmed` in `tip` */
+  let tailIds = "";
+  /** Immutables of escrows still in the unconfirmed tail */
+  const pendingImmutables = new Map<string, EscrowImmutables>();
+  const listeners = new Set<() => void>();
 
   /**
    * eth_getLogs that halves the block range when the provider rejects it.
@@ -191,10 +234,69 @@ export function createChainSync(config: ChainSyncConfig): ChainSync {
     return result;
   }
 
+  function matchesDeployment(snapshot: ChainSnapshot): boolean {
+    return (
+      snapshot.chainId === chainId &&
+      snapshot.escrowFactory === factoryAddress &&
+      snapshot.startBlock === deployment.startBlock
+    );
+  }
+
+  /** Adopt a snapshot if it is ahead of the current confirmed state */
+  function hydrate(raw: string | null): boolean {
+    const snapshot = raw ? decodeSnapshot(raw) : null;
+    if (!snapshot || !matchesDeployment(snapshot)) return false;
+    if (confirmedBlock !== null && snapshot.block <= confirmedBlock) return false;
+    confirmed = tip = snapshot.state;
+    confirmedBlock = lastBlock = snapshot.block;
+    knownEscrows = snapshot.knownEscrows;
+    return true;
+  }
+
+  /** Restore from storage, else from the snapshot URL. Never throws. */
+  async function restore(): Promise<void> {
+    try {
+      if (config.storage && hydrate(await config.storage.getItem(storageKey))) return;
+    } catch {
+      // Storage unavailable (private mode, blocked) - continue without it
+    }
+    if (!config.snapshotUrl) return;
+    try {
+      const separator = config.snapshotUrl.includes("?") ? "&" : "?";
+      const res = await fetch(`${config.snapshotUrl}${separator}chainId=${chainId}`);
+      if (res.ok) hydrate(await res.text());
+    } catch {
+      // Snapshot server unreachable - fall back to a full scan
+    }
+  }
+
+  function toSnapshot(): ChainSnapshot | null {
+    if (confirmedBlock === null) return null;
+    return {
+      version: STATE_VERSION,
+      chainId,
+      escrowFactory: factoryAddress,
+      startBlock: deployment.startBlock,
+      block: confirmedBlock,
+      knownEscrows,
+      state: confirmed,
+    };
+  }
+
+  async function persist(): Promise<void> {
+    const snapshot = toSnapshot();
+    if (!config.storage || !snapshot) return;
+    try {
+      await config.storage.setItem(storageKey, encodeSnapshot(snapshot));
+    } catch {
+      // Quota exceeded or storage blocked - the next session rescans
+    }
+  }
+
   async function runSync(): Promise<ChainState> {
     const latest = (await client.getBlockNumber({ cacheTime: 0 })) - blockLag;
-    const fromBlock = lastBlock === null ? deployment.startBlock : lastBlock + 1n;
-    if (fromBlock > latest) return state;
+    const fromBlock = confirmedBlock === null ? deployment.startBlock : confirmedBlock + 1n;
+    if (fromBlock > latest) return tip;
 
     // One eth_getLogs (per chunk) for factory + registry + known escrows.
     const addresses = [factoryAddress, registryAddress, ...knownEscrows];
@@ -213,10 +315,11 @@ export function createChainSync(config: ChainSyncConfig): ChainSync {
 
     // Escrows created in this range only have logs from this range onwards,
     // so one extra [fromBlock, latest] scan covers them.
-    const [newEscrowLogChunks, immutables] = await Promise.all([
+    const [newEscrowLogChunks, fetchedImmutables] = await Promise.all([
       Promise.all(chunk(createdEscrows, ADDRESS_CHUNK_SIZE).map((c) => getLogs(c, fromBlock, latest))),
-      readImmutables(createdEscrows),
+      readImmutables(createdEscrows.filter((address) => !pendingImmutables.has(address))),
     ]);
+    const immutables = new Map([...pendingImmutables, ...fetchedImmutables]);
 
     const events = [
       ...factoryEvents,
@@ -243,20 +346,50 @@ export function createChainSync(config: ChainSyncConfig): ChainSync {
     events.sort((a, b) =>
       a.blockNumber === b.blockNumber ? a.logIndex - b.logIndex : a.blockNumber < b.blockNumber ? -1 : 1,
     );
-    for (const event of events) applyEvent(state, event, immutables);
 
-    knownEscrows.push(...createdEscrows);
+    const confirmUpTo = latest - confirmations;
+    const finalEvents = events.filter((e) => e.blockNumber <= confirmUpTo);
+    const tailEvents = events.filter((e) => e.blockNumber > confirmUpTo);
+    // The fetched range starts right after `confirmed`, so it covers the
+    // previous tail: unchanged ids mean the tip is the same (no new events, no reorg).
+    const eventIds = (list: ChainEvent[]) => list.map((e) => `${e.txHash}-${e.logIndex}`).join(",");
+    const changed = eventIds(events) !== tailIds;
+    tailIds = eventIds(tailEvents);
+
+    for (const event of finalEvents) applyEvent(confirmed, event, immutables);
+    if (confirmUpTo >= fromBlock) {
+      const finalCreated = new Set(
+        finalEvents.filter((e) => e.eventName === "EscrowCreated").map((e) => String(e.args.escrow).toLowerCase()),
+      );
+      knownEscrows = [...knownEscrows, ...createdEscrows.filter((address) => finalCreated.has(address))];
+      confirmedBlock = confirmUpTo;
+    }
+
+    pendingImmutables.clear();
+    if (tailEvents.length > 0) {
+      tip = structuredClone(confirmed);
+      for (const event of tailEvents) applyEvent(tip, event, immutables);
+      for (const address of createdEscrows) {
+        const values = immutables.get(address);
+        if (values && !knownEscrows.includes(address)) pendingImmutables.set(address, values);
+      }
+    } else {
+      tip = confirmed;
+    }
     lastBlock = latest;
-    return state;
+
+    if (confirmUpTo >= fromBlock) void persist();
+    if (changed) {
+      for (const listener of listeners) listener();
+    }
+    return tip;
   }
 
-  function sync(): Promise<ChainState> {
+  function startSync(): Promise<ChainState> {
     if (inflight) return inflight;
-    if (lastBlock !== null && Date.now() - lastSyncAt < minSyncIntervalMs) {
-      return Promise.resolve(state);
-    }
     inflight = runSync()
       .then((result) => {
+        live = true;
         lastSyncAt = Date.now();
         return result;
       })
@@ -266,12 +399,37 @@ export function createChainSync(config: ChainSyncConfig): ChainSync {
     return inflight;
   }
 
+  async function sync(): Promise<ChainState> {
+    restoring ??= restore();
+    await restoring;
+
+    if (lastBlock !== null && !live && config.staleWhileRevalidate) {
+      startSync().catch(() => {
+        // Keep serving the restored state; the next read retries
+      });
+      return tip;
+    }
+    if (live && Date.now() - lastSyncAt < minSyncIntervalMs) return tip;
+    return startSync();
+  }
+
   return {
     chainId,
     sync,
-    state,
+    get state() {
+      return tip;
+    },
     get isSynced() {
       return lastBlock !== null;
+    },
+    async snapshot() {
+      await sync();
+      const snapshot = toSnapshot();
+      return snapshot ? encodeSnapshot(snapshot) : null;
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
     },
   };
 }

@@ -6,6 +6,13 @@
  * Keep the two in sync when handler logic changes.
  */
 
+/**
+ * Version of the rows `applyEvent` produces. Bump it whenever handler logic
+ * or row shapes change: persisted snapshots with another version are
+ * discarded and rebuilt from chain.
+ */
+export const STATE_VERSION = 1;
+
 /** Zero address (lowercase) */
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
